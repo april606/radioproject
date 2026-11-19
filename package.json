@@ -1,0 +1,35 @@
+{
+  "name": "radioproject",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit -p tsconfig.vite.json && vite build",
+    "preview": "vite preview",
+    "start": "vite preview",
+    "lint": "eslint"
+  },
+  "dependencies": {
+    "lucide-react": "^1.75.0",
+    "mapbox-gl": "^3.35.0",
+    "next": "16.4.6",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "zustand": "^5.1.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/turbopack": "4.3.3",
+    "@tailwindcss/vite": "^4.3.5",
+    "@types/geojson": "^7946.0.16",
+    "@types/mapbox-gl": "^3.4.1",
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "@vitejs/plugin-react": "^6.3.0",
+    "eslint": "^9",
+    "eslint-config-next": "16.4.6",
+    "tailwindcss": "4.3.3",
+    "typescript": "^5",
+    "vite": "^8.3.8"
+  }
+}
