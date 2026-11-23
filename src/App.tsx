@@ -1,3 +1,5 @@
+"use client";
+
 import { useRef, useState } from "react";
 import { RadioTower } from "lucide-react";
 import { AudioPlayerBar, type AudioPlayerHandle } from "./components/AudioPlayerBar";
@@ -15,7 +17,7 @@ export default function App({ mapboxToken }: { mapboxToken?: string }) {
         accessToken={mapboxToken}
         stations={stations}
         playingId={playingId}
-        onSelect={(station) => player.current?.playStation(station)}
+        onSelect={(station) => player.current?.selectStation(station)}
       />
       <header className="absolute left-4 top-4 max-w-[calc(100%-5rem)] rounded-2xl border border-white/15 bg-black/70 px-4 py-3 backdrop-blur-md sm:left-6 sm:top-6">
         <h1 className="flex items-center gap-2 font-semibold">

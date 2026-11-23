@@ -1,6 +1,6 @@
 ﻿# 세계 라디오
 
-React, Vite, TypeScript, Tailwind CSS로 만든 Mapbox 지구본 라디오입니다.
+Next.js App Router, TypeScript, Tailwind CSS, Mapbox로 만든 지구본 라디오입니다. 방송국을 선택하면 현지 날씨와 시각이 표시되고 라디오와 환경음 볼륨을 따로 조절할 수 있습니다.
 
 ## 설치 및 실행
 
@@ -9,311 +9,170 @@ npm install
 npm run dev
 ```
 
-기존 Vite 프로젝트에 옮길 경우 사용하는 패키지입니다.
-
-```bash
-npm install react react-dom mapbox-gl@^3 lucide-react
-npm install -D typescript vite @vitejs/plugin-react tailwindcss @tailwindcss/vite @types/react @types/react-dom @types/geojson
-```
-
-프로젝트 루트의 `.env.local` 또는 `.env`에 Mapbox 공개 토큰을 설정하고 개발 서버를 다시 시작합니다.
+프로젝트 루트의 `.env.local`에 다음 값을 설정하고 서버를 다시 시작하세요.
 
 ```dotenv
-VITE_MAPBOX_ACCESS_TOKEN=pk.your_public_token
+NEXT_PUBLIC_MAPBOX_ACCESS_TOKEN=pk.your_public_token
+OPENWEATHER_API_KEY=your_openweather_api_key
 ```
 
-`npm run build`는 타입 검사와 프로덕션 빌드를 실행합니다. `npm run preview`로 빌드 결과를 확인할 수 있습니다.
+`npm run build`로 프로덕션 빌드를 만들고 `npm start`로 실행합니다. PowerShell에서 npm 스크립트가 차단되면 `npm.cmd`를 사용하세요.
 
-## 파일 구조
+날씨 API는 방송국 좌표로 [OpenWeather Current Weather API](https://openweathermap.org/api/current)를 조회합니다. 원본 날씨 데이터는 좌표별로 30분 동안 캐시하며, 현지 시각과 낮·밤 여부는 조회 시 계산합니다. 날씨 조회가 실패해도 라디오와 수동 환경음 선택을 사용할 수 있습니다.
 
-```text
-index.html
-vite.config.mts
-tsconfig.vite.json
-src/
-  main.tsx
-  styles.css
-  vite-env.d.ts
-  App.tsx
-  types/radio.ts
-  hooks/useRadioStations.ts
-  components/GlobeMap.tsx
-  components/AudioPlayerBar.tsx
-```
+## 테스트용 환경음 준비
 
-[Radio Browser API 문서](https://docs.radio-browser.info/)에 명시된 HTTPS API 미러를 사용합니다. HTTPS 페이지에서 HTTP 스트림은 브라우저 정책에 따라 재생에 실패할 수 있으며 플레이어에 오류와 재시도 버튼이 표시됩니다.
+`public/sounds/` 폴더를 만들고 사용 권한이 있는 MP3 파일을 다음 이름으로 넣으세요. 첫 테스트에서는 같은 MP3를 네 이름으로 복사해도 됩니다. 날씨별 소리를 구분하려면 각각 다른 녹음을 사용하세요.
 
-## 전체 소스
+| 파일 | 환경음 |
+| --- | --- |
+| `public/sounds/rain.mp3` | 비 |
+| `public/sounds/wind.mp3` | 바람 |
+| `public/sounds/night.mp3` | 풀벌레 |
+| `public/sounds/waves.mp3` | 파도 |
 
-### src/types/radio.ts
+지구본에서 방송국을 고르고 환경음 셀렉터에서 각 파일을 전환해 보세요. 라디오를 일시정지하면 환경음도 멈춥니다. 파일이 누락되거나 로드에 실패하면 브라우저 개발자 도구 콘솔에 경고가 표시됩니다.
+
+## 2단계 전체 소스
+
+### src/types/weather.ts
 
 ```ts
-export interface RadioStation {
-  stationuuid: string;
-  name: string;
-  country: string;
-  state: string;
-  tags: string;
-  geo_lat: number;
-  geo_long: number;
-  url_resolved: string;
-  lastcheckok: 1;
+export type WeatherCondition =
+  | "Rain"
+  | "Drizzle"
+  | "Thunderstorm"
+  | "Snow"
+  | "Clear"
+  | "Clouds"
+  | "Atmosphere";
+
+export interface Weather {
+  temp: number;
+  condition: WeatherCondition;
+  description: string;
+  localTime: string;
+  isDay: boolean;
+}
+
+export type AmbientType = "rain" | "wind" | "night" | "waves";
+export type AmbientMode = AmbientType | "auto" | "off";
+
+export interface AmbientSound {
+  type: AmbientType;
+  label: string;
+  icon: "cloud-rain" | "wind" | "moon" | "waves";
+  src: `/sounds/${AmbientType}.mp3`;
 }
 ```
 
-### src/hooks/useRadioStations.ts
+### src/app/api/weather/route.ts
 
 ```ts
-import { useEffect, useState } from "react";
-import type { RadioStation } from "../types/radio";
+import type { Weather, WeatherCondition } from "../../../types/weather";
 
-const endpoint = "https://de1.api.radio-browser.info/json/stations/search";
-const params = new URLSearchParams({
-  limit: "300",
-  hidebroken: "true",
-  lastcheckok: "1",
-  has_geo_info: "true",
-  order: "clickcount",
-  reverse: "true",
+const conditions: readonly WeatherCondition[] = [
+  "Rain", "Drizzle", "Thunderstorm", "Snow", "Clear", "Clouds", "Atmosphere",
+];
+
+const localTimeFormat = new Intl.DateTimeFormat("en-US", {
+  timeZone: "UTC",
+  hour: "2-digit",
+  minute: "2-digit",
+  hour12: true,
 });
 
-function isRadioStation(value: unknown): value is RadioStation {
-  if (!value || typeof value !== "object") return false;
-  const station = value as Record<string, unknown>;
-  const { geo_lat, geo_long, url_resolved } = station;
-  if (
-    typeof station.stationuuid !== "string" || !station.stationuuid ||
-    typeof station.name !== "string" ||
-    typeof station.country !== "string" ||
-    typeof station.state !== "string" ||
-    typeof station.tags !== "string" ||
-    station.lastcheckok !== 1 ||
-    typeof geo_lat !== "number" || !Number.isFinite(geo_lat) || Math.abs(geo_lat) > 90 ||
-    typeof geo_long !== "number" || !Number.isFinite(geo_long) || Math.abs(geo_long) > 180 ||
-    typeof url_resolved !== "string"
-  ) return false;
-
-  try {
-    return ["http:", "https:"].includes(new URL(url_resolved).protocol);
-  } catch {
-    return false;
-  }
+function coordinate(value: string | null, limit: number) {
+  if (!value?.trim()) return null;
+  const number = Number(value);
+  return Number.isFinite(number) && Math.abs(number) <= limit ? number : null;
 }
 
-export function useRadioStations() {
-  const [stations, setStations] = useState<RadioStation[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
-  const [errorMessage, setErrorMessage] = useState("");
-  const [request, setRequest] = useState(0);
+function unavailable() {
+  return Response.json({ error: "날씨 데이터를 가져오지 못했습니다." }, { status: 502 });
+}
 
-  useEffect(() => {
-    const controller = new AbortController();
-
-    async function loadStations() {
-      try {
-        const response = await fetch(`${endpoint}?${params}`, {
-          signal: AbortSignal.any([controller.signal, AbortSignal.timeout(15000)]),
-        });
-        if (!response.ok) throw new Error(String(response.status));
-        const results: unknown = await response.json();
-        if (!Array.isArray(results)) throw new Error("Invalid response");
-        if (!controller.signal.aborted) setStations(results.filter(isRadioStation));
-      } catch {
-        if (!controller.signal.aborted) setErrorMessage("방송국 목록을 불러오지 못했습니다.");
-      } finally {
-        if (!controller.signal.aborted) setIsLoading(false);
-      }
-    }
-
-    void loadStations();
-    return () => controller.abort();
-  }, [request]);
-
-  function retry() {
-    setErrorMessage("");
-    setIsLoading(true);
-    setRequest((previous) => previous + 1);
+export async function GET(request: Request) {
+  const { searchParams } = new URL(request.url);
+  const lat = coordinate(searchParams.get("lat"), 90);
+  const lon = coordinate(searchParams.get("lon"), 180);
+  if (lat === null || lon === null) {
+    return Response.json({ error: "유효한 위도와 경도가 필요합니다." }, { status: 400 });
   }
 
-  return { stations, isLoading, errorMessage, retry };
+  const key = process.env.OPENWEATHER_API_KEY?.trim();
+  if (!key) {
+    return Response.json({ error: "날씨 서비스를 사용할 수 없습니다." }, { status: 503 });
+  }
+
+  const url = new URL("https://api.openweathermap.org/data/2.5/weather");
+  url.search = new URLSearchParams({
+    lat: String(lat), lon: String(lon), appid: key, units: "metric",
+  }).toString();
+
+  try {
+    const response = await fetch(url, {
+      next: { revalidate: 1800 },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!response.ok) return unavailable();
+
+    const data = await response.json();
+    const temp: unknown = data?.main?.temp;
+    const timezone: unknown = data?.timezone;
+    const sunrise: unknown = data?.sys?.sunrise;
+    const sunset: unknown = data?.sys?.sunset;
+    const main: unknown = data?.weather?.[0]?.main;
+    const description: unknown = data?.weather?.[0]?.description;
+    if (
+      typeof temp !== "number" || !Number.isFinite(temp) ||
+      typeof timezone !== "number" || !Number.isFinite(timezone) ||
+      typeof sunrise !== "number" || !Number.isFinite(sunrise) ||
+      typeof sunset !== "number" || !Number.isFinite(sunset) ||
+      typeof main !== "string" || typeof description !== "string"
+    ) return unavailable();
+
+    const now = Date.now();
+    const weather: Weather = {
+      temp: Math.round(temp),
+      condition: conditions.find((condition) => condition === main) ?? "Atmosphere",
+      description,
+      localTime: localTimeFormat.format(now + timezone * 1000),
+      isDay: now / 1000 >= sunrise && now / 1000 < sunset,
+    };
+    return Response.json(weather, { headers: { "Cache-Control": "no-store" } });
+  } catch {
+    return unavailable();
+  }
 }
 ```
 
-### src/components/GlobeMap.tsx
+### src/utils/ambientSound.ts
 
-```tsx
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import mapboxgl from "mapbox-gl";
-import type { FeatureCollection, Point } from "geojson";
-import type { RadioStation } from "../types/radio";
+```ts
+import type { AmbientSound, AmbientType, Weather } from "../types/weather";
 
-const sourceId = "radio-stations";
-const layerId = "radio-station-points";
+export const ambientSounds: Record<AmbientType, AmbientSound> = {
+  rain: { type: "rain", label: "빗소리 (Rain)", icon: "cloud-rain", src: "/sounds/rain.mp3" },
+  wind: { type: "wind", label: "겨울 바람 (Winter Wind)", icon: "wind", src: "/sounds/wind.mp3" },
+  night: { type: "night", label: "밤의 풀벌레 (Night Crickets)", icon: "moon", src: "/sounds/night.mp3" },
+  waves: { type: "waves", label: "잔잔한 파도/산들바람 (Breeze)", icon: "waves", src: "/sounds/waves.mp3" },
+};
 
-interface Props {
-  accessToken?: string;
-  stations: RadioStation[];
-  playingId: string | null;
-  onSelect: (station: RadioStation) => void;
-}
-
-export function GlobeMap({ accessToken, stations, playingId, onSelect }: Props) {
-  const container = useRef<HTMLDivElement>(null);
-  const mapRef = useRef<mapboxgl.Map | null>(null);
-  const [error, setError] = useState("");
-  const [hasRendered, setHasRendered] = useState(false);
-  const token = accessToken?.trim();
-  const validToken = Boolean(token && /^pk\.[\w-]+\.[\w-]+$/.test(token));
-
-  const data = useMemo<FeatureCollection<Point, { stationuuid: string }>>(() => ({
-    type: "FeatureCollection",
-    features: stations.map((station) => ({
-      type: "Feature",
-      properties: { stationuuid: station.stationuuid },
-      geometry: { type: "Point", coordinates: [station.geo_long, station.geo_lat] },
-    })),
-  }), [stations]);
-  const byId = useMemo(() => new Map(stations.map((station) => [station.stationuuid, station])), [stations]);
-  const latest = useRef({ data, byId, playingId, onSelect });
-
-  useLayoutEffect(() => {
-    latest.current = { data, byId, playingId, onSelect };
-  }, [data, byId, playingId, onSelect]);
-
-  useEffect(() => {
-    if (!validToken || !token || !container.current) return;
-
-    let map: mapboxgl.Map;
-    try {
-      map = new mapboxgl.Map({
-        accessToken: token,
-        container: container.current,
-        style: "mapbox://styles/mapbox/dark-v11",
-        projection: "globe",
-        center: [126.9780, 37.5665],
-        zoom: 2.2,
-      });
-    } catch {
-      const report = window.setTimeout(() => {
-        setError("지구본을 시작할 수 없습니다. 브라우저의 WebGL 설정을 확인하세요.");
-      }, 0);
-      return () => window.clearTimeout(report);
-    }
-
-    mapRef.current = map;
-    map.addControl(new mapboxgl.NavigationControl({ showCompass: false }), "top-right");
-    let rendered = false;
-    const loadTimeout = window.setTimeout(() => {
-      setError((previous) => previous || "지도 로딩 시간이 초과되었습니다. 네트워크 연결을 확인한 뒤 새로고침하세요.");
-    }, 15000);
-
-    map.on("error", ({ error: mapError }) => {
-      const status = (mapError as Error & { status?: number }).status;
-      if (status === 401 || status === 403) {
-        setError("Mapbox 요청이 거부되었습니다. 공개 토큰의 권한과 허용 URL을 확인하세요.");
-      } else if (!rendered) {
-        setError("지도 데이터를 불러오지 못했습니다. 네트워크 연결을 확인하세요.");
-      }
-    });
-    map.once("load", () => {
-      rendered = true;
-      window.clearTimeout(loadTimeout);
-      setHasRendered(true);
-      setError("");
-    });
-    map.on("webglcontextlost", () => setError("WebGL 연결이 끊겼습니다. 브라우저의 그래픽 가속을 확인하세요."));
-    map.on("webglcontextrestored", () => setError(""));
-
-    map.on("style.load", () => {
-      map.setFog({
-        color: "#17243a",
-        "high-color": "#111d32",
-        "space-color": "#030611",
-        "horizon-blend": 0.12,
-        "star-intensity": 0.65,
-      });
-      map.addSource(sourceId, {
-        type: "geojson",
-        data: latest.current.data,
-        promoteId: "stationuuid",
-      });
-      map.addLayer({
-        id: layerId,
-        type: "circle",
-        source: sourceId,
-        paint: {
-          "circle-color": ["case", ["boolean", ["feature-state", "playing"], false], "#f59e0b", "#10b981"],
-          "circle-radius": ["case", ["boolean", ["feature-state", "playing"], false], 9, 5],
-          "circle-stroke-width": 1,
-          "circle-stroke-color": "#d1fae5",
-          "circle-stroke-opacity": 0.55,
-        },
-      });
-      if (latest.current.playingId) {
-        map.setFeatureState({ source: sourceId, id: latest.current.playingId }, { playing: true });
-      }
-    });
-
-    map.on("mouseenter", layerId, () => { map.getCanvas().style.cursor = "pointer"; });
-    map.on("mouseleave", layerId, () => { map.getCanvas().style.cursor = ""; });
-    map.on("click", ({ point }) => {
-      if (!map.getLayer(layerId)) return;
-      const options = { layers: [layerId] };
-      const feature = map.queryRenderedFeatures(point, options)[0]
-        ?? map.queryRenderedFeatures([
-          [point.x - 5, point.y - 5],
-          [point.x + 5, point.y + 5],
-        ], options)[0];
-      const id: unknown = feature?.properties?.stationuuid;
-      const station = typeof id === "string" ? latest.current.byId.get(id) : undefined;
-      if (!station) return;
-      latest.current.onSelect(station);
-      map.flyTo({ center: [station.geo_long, station.geo_lat], zoom: 5, speed: 1.2 });
-    });
-
-    return () => {
-      window.clearTimeout(loadTimeout);
-      mapRef.current = null;
-      map.remove();
-    };
-  }, [token, validToken]);
-
-  useEffect(() => {
-    mapRef.current?.getSource<mapboxgl.GeoJSONSource>(sourceId)?.setData(data);
-  }, [data]);
-
-  useEffect(() => {
-    const map = mapRef.current;
-    if (!map?.getSource(sourceId) || !playingId) return;
-    const target = { source: sourceId, id: playingId };
-    map.setFeatureState(target, { playing: true });
-    return () => {
-      if (mapRef.current === map && map.getSource(sourceId)) map.removeFeatureState(target, "playing");
-    };
-  }, [playingId]);
-
-  const message = !token
-    ? ".env.local에 Mapbox 공개 토큰을 설정한 뒤 개발 서버를 다시 시작하세요."
-    : !validToken
-      ? "Mapbox 토큰 형식이 올바르지 않습니다. pk.로 시작하는 전체 공개 토큰을 입력하세요."
-      : error;
-
-  return (
-    <>
-      <div className="absolute inset-0">
-        <div ref={container} className="size-full" aria-label="세계 라디오 방송국 지도" />
-      </div>
-      {message ? (
-        <p role="alert" className="absolute inset-x-6 top-1/2 mx-auto w-fit rounded-xl border border-white/15 bg-black/80 px-5 py-3 text-center text-sm">
-          {message}
-        </p>
-      ) : !hasRendered && (
-        <p role="status" className="pointer-events-none absolute inset-x-6 top-1/2 mx-auto w-fit rounded-xl bg-black/80 px-5 py-3 text-sm">
-          지구본을 불러오는 중…
-        </p>
-      )}
-    </>
-  );
+export function getAmbientSound({ condition, isDay }: Pick<Weather, "condition" | "isDay">): AmbientSound {
+  switch (condition) {
+    case "Rain":
+    case "Drizzle":
+    case "Thunderstorm":
+      return ambientSounds.rain;
+    case "Snow":
+    case "Atmosphere":
+      return ambientSounds.wind;
+    case "Clear":
+      return isDay ? ambientSounds.waves : ambientSounds.night;
+    case "Clouds":
+      return ambientSounds.waves;
+  }
 }
 ```
 
@@ -321,11 +180,13 @@ export function GlobeMap({ accessToken, stations, playingId, onSelect }: Props) 
 
 ```tsx
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
-import { AudioLines, LoaderCircle, Pause, Play, Volume2, VolumeX } from "lucide-react";
+import { AudioLines, Cloud, CloudDrizzle, CloudFog, CloudLightning, CloudRain, CloudSnow, LoaderCircle, Moon, Pause, Play, Sun, Volume2, VolumeX, Waves, Wind } from "lucide-react";
 import type { RadioStation } from "../types/radio";
+import type { AmbientMode, Weather } from "../types/weather";
+import { ambientSounds, getAmbientSound } from "../utils/ambientSound";
 
 export interface AudioPlayerHandle {
-  playStation: (station: RadioStation) => void;
+  selectStation: (station: RadioStation) => void;
 }
 
 interface Props {
@@ -334,9 +195,16 @@ interface Props {
 
 const streamError = "스트림을 재생할 수 없습니다. 다시 시도하거나 다른 방송국을 선택하세요.";
 const control = "grid size-10 shrink-0 place-items-center rounded-full hover:bg-white/10 focus-visible:outline-2 focus-visible:outline-emerald-400 disabled:opacity-40";
+const weatherIcons = {
+  Rain: CloudRain, Drizzle: CloudDrizzle, Thunderstorm: CloudLightning,
+  Snow: CloudSnow, Clear: Sun, Clouds: Cloud, Atmosphere: CloudFog,
+};
+const ambientIcons = { "cloud-rain": CloudRain, wind: Wind, moon: Moon, waves: Waves };
 
 export const AudioPlayerBar = forwardRef<AudioPlayerHandle, Props>(function AudioPlayerBar({ onPlayingChange }, ref) {
   const audioRef = useRef<HTMLAudioElement>(null);
+  const ambientRef = useRef<HTMLAudioElement>(null);
+  const weatherRequest = useRef<AbortController | null>(null);
   const attempt = useRef(0);
   const selected = useRef<RadioStation | null>(null);
   const timeout = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -346,6 +214,17 @@ export const AudioPlayerBar = forwardRef<AudioPlayerHandle, Props>(function Audi
   const [errorMessage, setErrorMessage] = useState("");
   const [volume, setVolume] = useState(0.7);
   const [muted, setMuted] = useState(false);
+  const [weather, setWeather] = useState<Weather | null>(null);
+  const [weatherStatus, setWeatherStatus] = useState<"idle" | "loading" | "unavailable">("idle");
+  const [ambientEnabled, setAmbientEnabled] = useState(true);
+  const [ambientMode, setAmbientMode] = useState<AmbientMode>("auto");
+  const [ambientVolume, setAmbientVolume] = useState(0.3);
+  const ambient = ambientMode === "off" ? null :
+    ambientMode === "auto" ? (weather && getAmbientSound(weather)) : ambientSounds[ambientMode];
+  const ambientSrc = ambient?.src;
+  const WeatherIcon = weather?.condition === "Clear" && !weather.isDay ? Moon :
+    weather && weatherIcons[weather.condition];
+  const AmbientIcon = ambient ? ambientIcons[ambient.icon] : Waves;
 
   useEffect(() => {
     const audio = audioRef.current;
@@ -354,16 +233,38 @@ export const AudioPlayerBar = forwardRef<AudioPlayerHandle, Props>(function Audi
     return () => {
       attempt.current += 1;
       clearTimeout(timeout.current);
+      weatherRequest.current?.abort();
       audio.pause();
       audio.removeAttribute("src");
       audio.load();
     };
   }, []);
 
+  useEffect(() => {
+    if (ambientRef.current) ambientRef.current.volume = ambientVolume;
+  }, [ambientVolume]);
+
+  useEffect(() => {
+    const audio = ambientRef.current;
+    if (!audio || !isPlaying || !ambientEnabled || !ambientSrc) return;
+
+    let active = true;
+    void audio.play().catch((error: unknown) => {
+      if (active && !audio.error && !(error instanceof DOMException && error.name === "AbortError")) {
+        console.warn("환경음을 재생하지 못했습니다.", ambientSrc);
+      }
+    });
+    return () => {
+      active = false;
+      audio.pause();
+    };
+  }, [ambientEnabled, ambientSrc, isPlaying]);
+
   function stop(message = "") {
     attempt.current += 1;
     clearTimeout(timeout.current);
     audioRef.current?.pause();
+    ambientRef.current?.pause();
     setIsLoading(false);
     setIsPlaying(false);
     setErrorMessage(message);
@@ -376,6 +277,7 @@ export const AudioPlayerBar = forwardRef<AudioPlayerHandle, Props>(function Audi
     const id = ++attempt.current;
     clearTimeout(timeout.current);
     audio.pause();
+    ambientRef.current?.pause();
     audio.removeAttribute("src");
     audio.load();
     selected.current = next;
@@ -397,12 +299,38 @@ export const AudioPlayerBar = forwardRef<AudioPlayerHandle, Props>(function Audi
     });
   }
 
-  useImperativeHandle(ref, () => ({ playStation }));
+  function selectStation(next: RadioStation) {
+    weatherRequest.current?.abort();
+    const controller = new AbortController();
+    weatherRequest.current = controller;
+    setWeather(null);
+    setWeatherStatus("loading");
+    playStation(next);
+
+    const params = new URLSearchParams({
+      lat: String(next.geo_lat),
+      lon: String(next.geo_long),
+    });
+    void (async () => {
+      try {
+        const response = await fetch(`/api/weather?${params}`, { signal: controller.signal });
+        if (!response.ok) throw new Error("Weather request failed");
+        const result: Weather = await response.json();
+        if (controller.signal.aborted) return;
+        setWeather(result);
+        setWeatherStatus("idle");
+      } catch {
+        if (!controller.signal.aborted) setWeatherStatus("unavailable");
+      }
+    })();
+  }
+
+  useImperativeHandle(ref, () => ({ selectStation }));
   const location = station && [station.country, station.state].filter(Boolean).join(" · ");
   const tags = station?.tags.split(",").map((tag) => tag.trim()).filter(Boolean);
 
   return (
-    <section aria-label="라디오 플레이어" className="absolute inset-x-4 bottom-10 mx-auto flex max-w-3xl flex-wrap items-center gap-x-4 gap-y-3 rounded-2xl border border-white/15 bg-black/70 p-4 shadow-2xl backdrop-blur-md sm:flex-nowrap sm:px-5">
+    <section aria-label="라디오 플레이어" className="absolute inset-x-4 bottom-10 mx-auto flex max-w-3xl flex-wrap items-center gap-x-4 gap-y-3 rounded-2xl border border-white/15 bg-black/70 p-4 shadow-2xl backdrop-blur-md sm:px-5">
       <audio
         ref={audioRef}
         preload="none"
@@ -419,11 +347,34 @@ export const AudioPlayerBar = forwardRef<AudioPlayerHandle, Props>(function Audi
         }}
         onEnded={() => stop("스트림이 종료되었습니다. 다시 재생할 수 있습니다.")}
       />
+      <audio
+        ref={ambientRef}
+        src={ambientSrc}
+        preload="none"
+        loop
+        onError={() => {
+          if (ambientSrc && ambientRef.current?.error) {
+            console.warn("환경음 파일을 불러오지 못했습니다.", ambientSrc);
+          }
+        }}
+      />
       <div className="grid size-11 shrink-0 place-items-center rounded-xl bg-emerald-400/10 text-emerald-400">
         <AudioLines size={21} aria-hidden="true" />
       </div>
       <div className="min-w-0 flex-1 basis-[calc(100%-4rem)] sm:basis-auto">
-        <h2 className="truncate text-base font-semibold">{station?.name || "방송국 선택"}</h2>
+        <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+          <h2 className="truncate text-base font-semibold">{station?.name || "방송국 선택"}</h2>
+          <div aria-live="polite" className="text-xs text-slate-300">
+            {weather && WeatherIcon && (
+              <span title={weather.description} className="inline-flex items-center gap-1.5 rounded-full bg-white/10 px-2 py-1">
+                <WeatherIcon size={14} aria-hidden="true" />
+                {weather.temp}°C {weather.condition} • {weather.localTime}
+              </span>
+            )}
+            {weatherStatus === "loading" && "현지 날씨 조회 중"}
+            {weatherStatus === "unavailable" && "현지 날씨를 불러오지 못했습니다"}
+          </div>
+        </div>
         <p aria-live="polite" className={`text-sm ${errorMessage ? "text-amber-300" : "text-slate-300"}`}>
           {errorMessage || (isLoading ? "스트림 연결 중…" : station ? (isPlaying ? "재생 중" : "일시정지") : "지구본의 초록색 점을 선택하세요.")}
         </p>
@@ -458,7 +409,7 @@ export const AudioPlayerBar = forwardRef<AudioPlayerHandle, Props>(function Audi
         </button>
         <input
           type="range"
-          aria-label="볼륨"
+          aria-label="라디오 볼륨"
           min={0}
           max={1}
           step={0.01}
@@ -471,14 +422,76 @@ export const AudioPlayerBar = forwardRef<AudioPlayerHandle, Props>(function Audi
           }}
         />
       </div>
+      <div className="flex w-full flex-wrap items-center gap-3 border-t border-white/10 pt-3 text-sm">
+        <button
+          type="button"
+          aria-label="환경음"
+          aria-pressed={ambientEnabled && ambientMode !== "off"}
+          className="inline-flex items-center gap-2 rounded-lg bg-white/10 px-3 py-1.5 hover:bg-white/15"
+          onClick={() => {
+            if (ambientMode === "off") {
+              setAmbientMode("auto");
+              setAmbientEnabled(true);
+            } else {
+              setAmbientEnabled(!ambientEnabled);
+            }
+          }}
+        >
+          <AmbientIcon size={16} aria-hidden="true" />
+          환경음 {ambientEnabled && ambientMode !== "off" ? "ON" : "OFF"}
+        </button>
+        <select
+          aria-label="환경음 종류"
+          title={ambient?.label}
+          value={ambientMode}
+          className="max-w-full rounded-lg border border-white/15 bg-slate-900 px-2 py-1.5"
+          onChange={(event) => {
+            const mode = event.currentTarget.value as AmbientMode;
+            setAmbientMode(mode);
+            setAmbientEnabled(mode !== "off");
+          }}
+        >
+          <option value="auto">자동 (현지 날씨)</option>
+          <option value="rain">비</option>
+          <option value="wind">바람</option>
+          <option value="night">밤</option>
+          <option value="waves">파도</option>
+          <option value="off">끄기</option>
+        </select>
+        <label className="flex items-center gap-2 text-slate-300 sm:ml-auto">
+          환경음 볼륨
+          <input
+            type="range"
+            min={0}
+            max={1}
+            step={0.01}
+            value={ambientVolume}
+            className="w-24 accent-sky-400"
+            onChange={(event) => setAmbientVolume(event.currentTarget.valueAsNumber)}
+          />
+        </label>
+      </div>
     </section>
   );
 });
 ```
 
+### src/app/page.tsx
+
+```tsx
+import App from "../App";
+
+export default function Home() {
+  const mapboxToken = process.env.NEXT_PUBLIC_MAPBOX_ACCESS_TOKEN || process.env.VITE_MAPBOX_ACCESS_TOKEN;
+  return <App mapboxToken={mapboxToken} />;
+}
+```
+
 ### src/App.tsx
 
 ```tsx
+"use client";
+
 import { useRef, useState } from "react";
 import { RadioTower } from "lucide-react";
 import { AudioPlayerBar, type AudioPlayerHandle } from "./components/AudioPlayerBar";
@@ -496,7 +509,7 @@ export default function App({ mapboxToken }: { mapboxToken?: string }) {
         accessToken={mapboxToken}
         stations={stations}
         playingId={playingId}
-        onSelect={(station) => player.current?.playStation(station)}
+        onSelect={(station) => player.current?.selectStation(station)}
       />
       <header className="absolute left-4 top-4 max-w-[calc(100%-5rem)] rounded-2xl border border-white/15 bg-black/70 px-4 py-3 backdrop-blur-md sm:left-6 sm:top-6">
         <h1 className="flex items-center gap-2 font-semibold">
@@ -516,79 +529,4 @@ export default function App({ mapboxToken }: { mapboxToken?: string }) {
     </main>
   );
 }
-```
-
-### src/main.tsx
-
-```tsx
-import { StrictMode } from "react";
-import { createRoot } from "react-dom/client";
-import "mapbox-gl/dist/mapbox-gl.css";
-import "./styles.css";
-import App from "./App";
-
-createRoot(document.getElementById("root")!).render(
-  <StrictMode>
-    <App mapboxToken={import.meta.env.VITE_MAPBOX_ACCESS_TOKEN} />
-  </StrictMode>,
-);
-```
-
-### src/styles.css
-
-```css
-@import "tailwindcss";
-```
-
-### src/vite-env.d.ts
-
-```ts
-/// <reference types="vite/client" />
-```
-
-### vite.config.mts
-
-```ts
-import { defineConfig } from "vite";
-import react from "@vitejs/plugin-react";
-import tailwindcss from "@tailwindcss/vite";
-
-export default defineConfig({
-  plugins: [react(), tailwindcss()],
-});
-```
-
-### tsconfig.vite.json
-
-```json
-{
-  "compilerOptions": {
-    "target": "ES2022",
-    "lib": ["ES2022", "DOM", "DOM.Iterable"],
-    "module": "ESNext",
-    "moduleResolution": "bundler",
-    "strict": true,
-    "noEmit": true,
-    "skipLibCheck": true,
-    "jsx": "react-jsx"
-  },
-  "include": ["src/App.tsx", "src/main.tsx", "src/vite-env.d.ts", "vite.config.mts"]
-}
-```
-
-### index.html
-
-```html
-<!doctype html>
-<html lang="ko">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>세계 라디오</title>
-  </head>
-  <body>
-    <div id="root"></div>
-    <script type="module" src="/src/main.tsx"></script>
-  </body>
-</html>
 ```

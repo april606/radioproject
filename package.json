@@ -3,10 +3,10 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "vite",
-    "build": "tsc --noEmit -p tsconfig.vite.json && vite build",
-    "preview": "vite preview",
-    "start": "vite preview",
+    "dev": "next dev",
+    "build": "next build",
+    "preview": "next start",
+    "start": "next start",
     "lint": "eslint"
   },
   "dependencies": {

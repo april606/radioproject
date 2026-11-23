@@ -1,19 +1,6 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono, Inter } from "next/font/google";
-import "mapbox-gl/dist/mapbox-gl.css"
+import "mapbox-gl/dist/mapbox-gl.css";
 import "./globals.css";
-
-const inter = Inter({ subsets: ["latin"] });
-
-const geistSans = Geist({
-  variable: "--font-geist-sans",
-  subsets: ["latin"],
-});
-
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
-  subsets: ["latin"],
-});
 
 export const metadata: Metadata = {
   title: "세계 라디오",
@@ -21,14 +8,14 @@ export const metadata: Metadata = {
 };
 
 export default function RootLayout({
-   children,
+  children,
   }: Readonly<{
     children: React.ReactNode;
   }>) {
   return (
     <html lang="ko">
       <body
-        className={`${inter.className} bg-black text-white overflow-hidden`}
+        className="overflow-hidden bg-black text-white"
         suppressHydrationWarning={process.env.NODE_ENV === "development"}
       >
         {children}
